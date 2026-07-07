@@ -8,10 +8,12 @@ import { Settings } from './features/Settings'
 import {
   IconFeed,
   IconLibrary,
+  IconRefresh,
   IconSaved,
   IconSettings,
   IconSources,
 } from './ui/icons'
+import { useFeed } from './store/feed'
 
 type Tab = 'feed' | 'saved' | 'library' | 'sources' | 'settings'
 
@@ -41,6 +43,13 @@ function useOnline() {
 export default function App() {
   const [tab, setTab] = useState<Tab>('feed')
   const online = useOnline()
+  const feedLoading = useFeed((s) => s.isLoading)
+  const refreshFeed = useFeed((s) => s.refresh)
+
+  const doRefresh = () => {
+    setTab('feed')
+    void refreshFeed(true)
+  }
 
   return (
     <div className="app">
@@ -61,6 +70,10 @@ export default function App() {
             {label}
           </button>
         ))}
+        <button onClick={doRefresh} disabled={feedLoading} aria-label="Actualizar feed">
+          <IconRefresh className={`nav-ico ${feedLoading ? 'spin' : ''}`} />
+          Actualizar
+        </button>
       </nav>
     </div>
   )

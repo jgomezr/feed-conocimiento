@@ -9,13 +9,14 @@ interface FeedState {
   isLoading: boolean
   exhaustedUntil: number | null
   atEnd: boolean
+  /** Contador: al incrementarse, la vista del feed hace scroll al inicio. */
+  scrollToken: number
   init: () => Promise<void>
   onPageChange: (index: number) => void
-  refresh: () => Promise<void>
+  refresh: (manual?: boolean) => Promise<void>
 }
 
-const PREFETCH_THRESHOLD = 3
-const COOLDOWN_MS = 10 * 60 * 1000
+const END_COOLDOWN_MS = 10 * 60 * 1000
 
 export const useFeed = create<FeedState>((set, get) => ({
   cards: [],
@@ -23,55 +24,65 @@ export const useFeed = create<FeedState>((set, get) => ({
   isLoading: false,
   exhaustedUntil: null,
   atEnd: false,
+  scrollToken: 0,
 
   async init() {
-    const cards = await repo.loadFeed()
+    const cards = await repo.loadFeed() // orden: más nuevo primero
     set({ cards })
   },
 
   onPageChange(index) {
     set({ currentIndex: index })
-    const { cards } = get()
+    const { cards, isLoading } = get()
     const remaining = cards.length - 1 - index
-    if (remaining <= PREFETCH_THRESHOLD) void prefetch(set, get)
+    // Al llegar al final del feed, intentar traer lo nuevo y volver al inicio.
+    if (remaining <= 0 && !isLoading) void get().refresh(false)
   },
 
-  // Pull-to-refresh / manual: ignora el guard de cooldown.
-  async refresh() {
-    if (get().isLoading) return
-    set({ isLoading: true, exhaustedUntil: null })
-    await runIngest(set, get)
+  /**
+   * Actualiza el feed: trae contenido nuevo, recarga con lo más reciente arriba
+   * y (si hay algo nuevo, o si fue manual) salta al inicio.
+   * `manual` = disparado por el botón / pull-to-refresh; ignora el cooldown.
+   */
+  async refresh(manual = true) {
+    const s = get()
+    if (s.isLoading) return
+    // El cooldown solo frena el disparo automático (llegar al final sin novedades).
+    if (!manual && s.exhaustedUntil && Date.now() < s.exhaustedUntil) {
+      set({ atEnd: true })
+      return
+    }
+
+    const before = new Set(s.cards.map((c) => c.contentHash))
+    set({ isLoading: true })
+
+    try {
+      await refreshFromSources() // RSS → webhook → SQLite
+    } catch {
+      // Sin red u otro error: seguimos y mostramos lo que ya está en local.
+    }
+
+    const all = await repo.loadFeed() // más nuevo primero
+    const hasNew = all.some((c) => !before.has(c.contentHash))
+
+    if (hasNew || manual) {
+      // Reemplaza la lista, lleva al inicio (lo más nuevo queda arriba).
+      set({
+        cards: all,
+        currentIndex: 0,
+        isLoading: false,
+        atEnd: !hasNew,
+        exhaustedUntil: hasNew ? null : Date.now() + END_COOLDOWN_MS,
+        scrollToken: get().scrollToken + 1,
+      })
+    } else {
+      // Nada nuevo tras llegar al final: marca "al día" y enfría reintentos.
+      set({
+        cards: all,
+        isLoading: false,
+        atEnd: true,
+        exhaustedUntil: Date.now() + END_COOLDOWN_MS,
+      })
+    }
   },
 }))
-
-type Set = (partial: Partial<FeedState>) => void
-type Get = () => FeedState
-
-async function prefetch(set: Set, get: Get) {
-  const s = get()
-  if (s.isLoading) return
-  if (s.exhaustedUntil && Date.now() < s.exhaustedUntil) {
-    set({ atEnd: true })
-    return
-  }
-  set({ isLoading: true })
-  await runIngest(set, get)
-}
-
-async function runIngest(set: Set, get: Get) {
-  try {
-    await refreshFromSources()
-    const existing = new Set(get().cards.map((c) => c.contentHash))
-    const all = await repo.loadFeed()
-    const fresh = all.filter((c) => !existing.has(c.contentHash))
-
-    if (fresh.length === 0) {
-      set({ isLoading: false, exhaustedUntil: Date.now() + COOLDOWN_MS, atEnd: true })
-    } else {
-      set({ cards: [...get().cards, ...fresh], isLoading: false, exhaustedUntil: null, atEnd: false })
-    }
-  } catch {
-    // Sin red u otro error: liberar el guard, reintento en el próximo umbral.
-    set({ isLoading: false })
-  }
-}

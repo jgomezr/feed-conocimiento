@@ -6,6 +6,7 @@ import { CardView } from './CardView'
 
 export function Feed({ online }: { online: boolean }) {
   const { cards, init, onPageChange, atEnd, isLoading } = useFeed()
+  const scrollToken = useFeed((s) => s.scrollToken)
   const containerRef = useRef<HTMLDivElement>(null)
   const inited = useRef(false)
 
@@ -16,6 +17,11 @@ export function Feed({ online }: { online: boolean }) {
     inited.current = true
     void init()
   }, [init])
+
+  // Al actualizar el feed (botón o fin de feed con novedades), volver al inicio.
+  useEffect(() => {
+    if (scrollToken > 0) containerRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+  }, [scrollToken])
 
   // Detecta la tarjeta visible por scroll-snap y avisa al controlador (prefetch).
   useEffect(() => {
