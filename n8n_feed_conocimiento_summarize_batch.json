@@ -1,0 +1,294 @@
+{
+  "name": "Feed Conocimiento - Summarize Batch",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "summarize-batch",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "d14fc686-763b-431b-bbfb-a51138d1aaa2",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "52b6cdc0-df89-4a09-93dd-985883b1d90c"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "84e32ff6-b438-4469-a356-314fb35cc542",
+              "leftValue": "={{ ($json.body && $json.body.items ? $json.body.items.length : 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cd3cdecd-7d65-459f-86fa-0fe7e00451af",
+      "name": "Has Items?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0b0fce39-0a56-4532-a065-d875d4cab56c",
+              "name": "llmUrl",
+              "value": "https://api.groq.com/openai/v1/chat/completions",
+              "type": "string"
+            },
+            {
+              "id": "79611e39-7486-465f-97ae-f55389e507b6",
+              "name": "llmModel",
+              "value": "llama-3.3-70b-versatile",
+              "type": "string"
+            },
+            {
+              "id": "7141c60b-2165-4863-bc69-1f2e6e005712",
+              "name": "maxChars",
+              "value": 6000,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "390238f5-59db-48c1-bc81-b23fb95f7e7a",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $('Webhook').first().json.body || {};\nconst items = Array.isArray(body.items) ? body.items : [];\nreturn items.map((it) => ({ json: {\n  url: it.url || null,\n  rawText: it.rawText || null,\n  title: it.title || null,\n  doi: it.doi || null,\n  arxivId: it.arxivId || null,\n  isbn: it.isbn || null,\n  chapterTitle: it.chapterTitle || null,\n  pages: it.pages || null,\n  sourceType: it.sourceType || 'rss',\n  category_hint: it.category_hint || null,\n  publishedAt: it.publishedAt || null,\n}}));\n"
+      },
+      "id": "0cbc56a9-71e6-4e1c-95e9-8190f9c34230",
+      "name": "Split Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const SYSTEM_GEN = \"Eres un extractor de resumenes para un feed de conocimiento.\\nRecibes el texto de un contenido y devuelves UNICAMENTE un objeto JSON valido, sin texto antes ni despues, sin bloques de codigo, sin explicaciones.\\n\\nEsquema exacto:\\n{\\n  \\\"title\\\": string,        // titulo claro, max 80 caracteres\\n  \\\"summary\\\": string,      // 3 a 5 frases, en espanol, autocontenido, sin meta-referencias\\n  \\\"category\\\": string,     // EXACTAMENTE uno de: \\\"ciencia\\\" | \\\"filosofia\\\" | \\\"tecnologia\\\" | \\\"web\\\" | \\\"podcast\\\"\\n  \\\"estReadMin\\\": number    // minutos de lectura del ORIGINAL, entero 1-30\\n}\\n\\nReglas:\\n- El summary debe poder leerse solo, como una tarjeta, sin abrir el original.\\n- Si no puedes determinar la categoria, usa \\\"web\\\".\\n- No inventes datos que no esten en el texto.\\n- NO generes ni inventes citas, autores, anios ni DOIs. Eso se maneja por otro camino.\\n- Responde solo con el JSON.\";\nconst SYSTEM_SCI = \"Eres un extractor de resumenes para un feed de conocimiento, especializado en articulos cientificos. Recibes el texto (o abstract) de un paper y devuelves UNICAMENTE un objeto JSON valido, sin texto antes ni despues, sin bloques de codigo.\\n\\nEsquema exacto:\\n{\\n  \\\"title\\\": string,        // titulo claro y conciso, max 80 caracteres\\n  \\\"summary\\\": string,      // 3 a 5 frases en espanol. Prioriza EL HALLAZGO o la\\n                          // contribucion: que encontraron y por que importa.\\n                          // Evita 'el articulo habla de'.\\n  \\\"category\\\": string,     // normalmente \\\"ciencia\\\"; usa \\\"tecnologia\\\" o \\\"filosofia\\\" si aplica\\n  \\\"estReadMin\\\": number    // minutos de lectura estimados, entero 1-30\\n}\\n\\nReglas:\\n- El summary debe poder leerse solo, sin abrir el paper.\\n- No inventes resultados, cifras ni conclusiones que no esten en el texto.\\n- NO generes ni inventes la cita, autores, anio ni DOI. Eso se construye aparte.\\n- Responde solo con el JSON.\";\n\nfunction stripTags(s){\n  return String(s||'')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi,' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi,' ')\n    .replace(/<[^>]+>/g,' ')\n    .replace(/&[a-z]+;/gi,' ')\n    .replace(/\\s+/g,' ').trim();\n}\nfunction apaNameFromFull(n){\n  const parts = String(n||'').trim().split(/\\s+/).filter(Boolean);\n  if(parts.length===0) return '';\n  const fam = parts.pop();\n  const gi = parts.map(p=>p[0].toUpperCase()+'.').join(' ');\n  return fam + (gi ? ', ' + gi : '');\n}\nfunction joinAuthors(arr){\n  const a = (arr||[]).filter(Boolean);\n  if(a.length===0) return '';\n  if(a.length===1) return a[0];\n  if(a.length<=20) return a.slice(0,-1).join(', ') + ', & ' + a[a.length-1];\n  return a.slice(0,19).join(', ') + ', ... ' + a[a.length-1];\n}\nfunction apaCrossref(m){\n  m = m || {};\n  const authors = joinAuthors((m.author||[]).map(p=>{\n    const fam = p.family || '';\n    const gi = String(p.given||'').trim().split(/\\s+/).filter(Boolean).map(x=>x[0].toUpperCase()+'.').join(' ');\n    return fam ? (fam + (gi ? ', ' + gi : '')) : (p.name || '');\n  }));\n  let year='';\n  try { year = (m.issued && m.issued['date-parts'] && m.issued['date-parts'][0] && m.issued['date-parts'][0][0]) ||\n               (m.published && m.published['date-parts'] && m.published['date-parts'][0] && m.published['date-parts'][0][0]) || ''; } catch(e){}\n  const title = (m.title && m.title[0]) || '';\n  const journal = (m['container-title'] && m['container-title'][0]) || '';\n  const vol = m.volume || '';\n  const iss = m.issue ? '(' + m.issue + ')' : '';\n  const pages = m.page || '';\n  const doi = m.DOI ? 'https://doi.org/' + m.DOI : '';\n  let s = (authors ? authors + ' ' : '') + '(' + (year || 's.f.') + '). ' + title + '. ';\n  if(journal){ s += journal; if(vol) s += ', ' + vol + iss; if(pages) s += ', ' + pages; s += '. '; }\n  if(doi) s += doi;\n  return s.trim();\n}\nfunction parseArxiv(xml){\n  xml = String(xml||'');\n  const entry = xml.split('<entry>')[1] || xml;\n  const get = (tag) => { const m = entry.match(new RegExp('<'+tag+'>([\\\\s\\\\S]*?)<\\\\/'+tag+'>')); return m ? m[1].trim() : ''; };\n  const names = [];\n  const re = /<author>[\\s\\S]*?<name>([\\s\\S]*?)<\\/name>[\\s\\S]*?<\\/author>/g;\n  let mm; while((mm = re.exec(entry)) !== null){ names.push(mm[1].trim()); }\n  return { title: get('title').replace(/\\s+/g,' ').trim(), summary: get('summary').replace(/\\s+/g,' ').trim(), published: get('published'), names };\n}\nfunction apaArxiv(meta, id){\n  const authors = joinAuthors((meta.names||[]).map(apaNameFromFull));\n  const year = (meta.published||'').slice(0,4) || 's.f.';\n  return (authors ? authors + ' ' : '') + '(' + year + '). ' + meta.title + ' [Preprint]. arXiv. https://arxiv.org/abs/' + id;\n}\nfunction apaBook(vol, it){\n  const info = (vol && vol.items && vol.items[0] && vol.items[0].volumeInfo) || {};\n  const authors = joinAuthors((info.authors||[]).map(apaNameFromFull));\n  const year = (info.publishedDate||'').slice(0,4) || 's.f.';\n  const title = info.title || (it.title || '');\n  const publisher = info.publisher || '';\n  let s = (authors ? authors + ' ' : '') + '(' + year + '). ' + title + '. ' + (publisher ? publisher + '.' : '');\n  const extra = [];\n  if(it.chapterTitle) extra.push('Cap.: ' + it.chapterTitle);\n  if(it.pages) extra.push('pp. ' + it.pages);\n  if(extra.length) s += ' [' + extra.join(', ') + ']';\n  return s.trim();\n}\n\nconst cfg = $('Config').first().json;\nconst maxChars = cfg.maxChars || 6000;\nconst out = [];\n\nfor (const item of $input.all()) {\n  const it = item.json;\n  let text = '';\n  let citation = null;\n  let citationSource = null;\n  let originalUrl = it.url || null;\n  let publishedAt = it.publishedAt || null;\n  let err = null;\n\n  // --- 1. Metadatos -> cita APA (determinista, no LLM) ---\n  try {\n    if (it.doi) {\n      const r = await this.helpers.httpRequest({ method:'GET', json:true, timeout:15000,\n        url:'https://api.crossref.org/works/' + encodeURIComponent(it.doi),\n        headers:{'User-Agent':'FeedConocimiento/1.0 (mailto:hola@juliangomez.me)'} });\n      citation = apaCrossref(r.message); citationSource = 'crossref';\n      originalUrl = originalUrl || ('https://doi.org/' + it.doi);\n      if (!it.rawText && !it.url && r.message && r.message.abstract) text = stripTags(r.message.abstract);\n    } else if (it.arxivId) {\n      const xml = await this.helpers.httpRequest({ method:'GET', timeout:15000,\n        url:'http://export.arxiv.org/api/query?id_list=' + encodeURIComponent(it.arxivId) });\n      const meta = parseArxiv(xml);\n      citation = apaArxiv(meta, it.arxivId); citationSource = 'arxiv';\n      originalUrl = originalUrl || ('https://arxiv.org/abs/' + it.arxivId);\n      if (!it.rawText && meta.summary) text = meta.summary;\n      if (!publishedAt && meta.published) { const d = new Date(meta.published); if (!isNaN(d.getTime())) publishedAt = d.toISOString(); }\n    } else if (it.isbn) {\n      const vol = await this.helpers.httpRequest({ method:'GET', json:true, timeout:15000,\n        url:'https://www.googleapis.com/books/v1/volumes?q=isbn:' + encodeURIComponent(it.isbn) });\n      citation = apaBook(vol, it); citationSource = 'isbn';\n    }\n  } catch (e) { /* la cita es opcional: si falla, queda null */ }\n\n  // --- 2. Texto del contenido ---\n  if (!text) {\n    if (it.rawText) {\n      text = stripTags(it.rawText);\n    } else if (it.url) {\n      try {\n        const bodyResp = await this.helpers.httpRequest({ method:'GET', timeout:20000,\n          url: it.url, headers:{'User-Agent':'Mozilla/5.0 (compatible; FeedConocimientoBot/1.0)'} });\n        text = stripTags(bodyResp);\n      } catch (e) { err = 'fetch_failed'; }\n    } else {\n      err = 'no_content';\n    }\n  }\n\n  text = String(text).slice(0, maxChars);\n  if (!err && text.length < 120) err = 'too_short';\n\n  const isSci = (it.sourceType === 'scientific');\n  const system = isSci ? SYSTEM_SCI : SYSTEM_GEN;\n  const userMsg = 'Categoria sugerida: ' + (it.category_hint || 'ninguna') + '\\n\\nTexto:\\n\\n' + text;\n  const llmBody = { model: cfg.llmModel, messages: [\n    { role:'system', content: system },\n    { role:'user', content: userMsg },\n  ], temperature: 0.2, stream: false };\n\n  out.push({ json: {\n    originalUrl,\n    sourceType: it.sourceType || 'rss',\n    category_hint: it.category_hint || null,\n    title: it.title || null,\n    publishedAt,\n    citation,\n    citationSource,\n    text,\n    _error: err,\n    _llmBody: llmBody,\n  }});\n}\n\nreturn out;\n"
+      },
+      "id": "478fe900-feb6-413f-bc53-78558f961b33",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.llmUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._llmBody) }}",
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 500
+            }
+          }
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GROQ_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "c3c37b5f-aa04-464d-8daa-901b0593bd0d",
+      "name": "Summarize (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const preps = $('Prepare').all();\nconst responses = $input.all();\nconst out = { ok: true, cards: [], failed: [] };\nconst allowed = ['ciencia', 'filosofia', 'tecnologia', 'web', 'podcast'];\n\nfor (let i = 0; i < responses.length; i++) {\n  const p = (preps[i] && preps[i].json) || {};\n  const url = p.originalUrl || 'unknown';\n\n  if (p._error) { out.failed.push({ url, error: p._error }); continue; }\n\n  const r = (responses[i] && responses[i].json) || {};\n  if (r.error) { out.failed.push({ url, error: 'llm_failed' }); continue; }\n\n  let content = '';\n  if (r.choices && r.choices[0] && r.choices[0].message) content = r.choices[0].message.content || '';\n  else if (r.message && r.message.content) content = r.message.content;\n  else if (typeof r.response === 'string') content = r.response;\n\n  const m = String(content).match(/\\{[\\s\\S]*\\}/);\n  if (!m) { out.failed.push({ url, error: 'no_json' }); continue; }\n\n  try {\n    const card = JSON.parse(m[0]);\n    if (!card.summary) { out.failed.push({ url, error: 'incomplete' }); continue; }\n    let title = card.title;\n    if ((p.sourceType === 'book' || p.sourceType === 'manual') && p.title) title = p.title;\n    if (!title) { out.failed.push({ url, error: 'incomplete' }); continue; }\n    const fallbackCat = (p.sourceType === 'scientific') ? 'ciencia' : 'web';\n    out.cards.push({\n      title: String(title).slice(0, 120),\n      summary: card.summary,\n      category: allowed.includes(card.category) ? card.category : fallbackCat,\n      estReadMin: Number.isFinite(card.estReadMin) ? Math.min(30, Math.max(1, Math.round(card.estReadMin))) : 2,\n      originalUrl: p.originalUrl || null,\n      citation: p.citation || null,\n      citationSource: p.citationSource || null,\n      sourceType: p.sourceType || 'rss',\n      publishedAt: p.publishedAt || null,\n    });\n  } catch (e) {\n    out.failed.push({ url, error: 'json_parse' });\n  }\n}\n\nreturn [{ json: out }];\n"
+      },
+      "id": "a40ae1dd-fc53-4a2e-93cb-386176a121fe",
+      "name": "Build Cards",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "19e56bab-827e-4f17-9927-e7e98d69b715",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({ ok: false, error: 'no items', cards: [], failed: [] }) }}",
+        "options": {}
+      },
+      "id": "56afea5e-5ee6-430b-9917-6e915998dd27",
+      "name": "Respond Empty",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Has Items?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Items?": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Split Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Items": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "Summarize (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Build Cards",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Cards": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateId": "feed-conocimiento-summarize-batch"
+  },
+  "tags": []
+}

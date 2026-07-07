@@ -1,0 +1,13 @@
+# Dependencias y build (la app vive en app/)
+app/node_modules
+app/dist
+app/dist-ssr
+
+# Datos de sesión de Claude Code
+.claude/
+
+# Logs y temporales
+*.log
+npm-debug.log*
+.DS_Store
+*.local

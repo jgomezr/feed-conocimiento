@@ -1,0 +1,184 @@
+{
+  "name": "Feed Conocimiento - Fetch Feeds",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fetch-feeds",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "7f3a2c91-5b1e-4e8a-9c47-d20f6a83b514",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "e9a41b77-3c58-4f02-8d16-b95327ca60de"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "1a2b3c4d-0001-4a5b-8c9d-feedfeedfeed",
+              "leftValue": "={{ ($json.body && $json.body.feeds ? $json.body.feeds.length : 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b8c1d4e2-6f3a-4b7c-a1d9-40e58f27c631",
+      "name": "Has Feeds?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c5e7f9a1-0002-4c6d-9e8f-a3b5c7d9e1f3",
+              "name": "maxItemsPerFeed",
+              "value": 15,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d2f4a6b8-1c3e-4d5f-b7a9-62c84e05f917",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body || {};\nconst feeds = Array.isArray(body.feeds) ? body.feeds : [];\nconst maxPerFeed = Number(body.maxItemsPerFeed) || cfg.maxItemsPerFeed || 15;\n\nfunction stripCdata(s){ return String(s||'').replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1'); }\nfunction decodeEntities(s){\n  return String(s||'')\n    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'\"')\n    .replace(/&#0?39;/g,\"'\").replace(/&apos;/g,\"'\").replace(/&amp;/g,'&');\n}\nfunction getTag(block, tag){\n  const m = block.match(new RegExp('<' + tag + '[^>]*>([\\\\s\\\\S]*?)<\\\\/' + tag + '>', 'i'));\n  return m ? decodeEntities(stripCdata(m[1])).replace(/\\s+/g,' ').trim() : '';\n}\nfunction getLink(block){\n  // RSS 2.0: <link>url</link>\n  const rss = block.match(/<link>([\\s\\S]*?)<\\/link>/i);\n  if (rss && stripCdata(rss[1]).trim()) return decodeEntities(stripCdata(rss[1])).trim();\n  // Atom: preferir rel=\"alternate\"\n  const alt = block.match(/<link[^>]*rel=[\"']alternate[\"'][^>]*href=[\"']([^\"']+)[\"']/i);\n  if (alt) return decodeEntities(alt[1]);\n  const any = block.match(/<link[^>]*href=[\"']([^\"']+)[\"']/i);\n  if (any) return decodeEntities(any[1]);\n  return '';\n}\nfunction getDoi(block){\n  // cubre <dc:identifier>doi:10....</dc:identifier> y enlaces doi.org\n  const m = block.match(/doi(?:\\.org\\/|:)\\s*(10\\.\\d{4,9}\\/[^\\s\"'<]+)/i);\n  return m ? m[1].replace(/[.,;)]+$/, '') : null;\n}\nfunction getArxivId(link, block){\n  const re = /arxiv\\.org\\/abs\\/([a-z\\-]+(?:\\.[A-Z]{2})?\\/\\d{7}|\\d{4}\\.\\d{4,5})(?:v\\d+)?/i;\n  const m = String(link||'').match(re) || String(block||'').match(re);\n  return m ? m[1] : null;\n}\n\nconst out = { ok: true, items: [], failed: [] };\n\nfor (const f of feeds) {\n  const feedUrl = (typeof f === 'string') ? f : (f.url || '');\n  const type = (f && typeof f === 'object' && f.type) ? f.type : 'rss';\n  const hint = (f && typeof f === 'object') ? (f.categoryHint || f.category_hint || null) : null;\n  if (!feedUrl) { out.failed.push({ feed: null, error: 'no_url' }); continue; }\n\n  let xml = '';\n  try {\n    xml = await this.helpers.httpRequest({\n      method: 'GET', timeout: 20000, url: feedUrl,\n      headers: {\n        'User-Agent': 'FeedConocimiento/1.0 (+https://juliangomez.me)',\n        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',\n      },\n    });\n    if (typeof xml !== 'string') xml = JSON.stringify(xml);\n  } catch (e) { out.failed.push({ feed: feedUrl, error: 'fetch_failed' }); continue; }\n\n  const blocks = xml.match(/<item[\\s>][\\s\\S]*?<\\/item>|<entry[\\s>][\\s\\S]*?<\\/entry>/gi) || [];\n  if (blocks.length === 0) { out.failed.push({ feed: feedUrl, error: 'no_entries' }); continue; }\n\n  let count = 0;\n  for (const b of blocks) {\n    if (count >= maxPerFeed) break;\n    const link = getLink(b);\n    const doi = getDoi(b);\n    const arxivId = getArxivId(link, b);\n    if (!link && !doi && !arxivId) continue;\n\n    const item = { sourceType: type, feedUrl };\n    if (link) item.url = link;\n    if (type === 'scientific') {\n      if (arxivId) item.arxivId = arxivId;\n      else if (doi) item.doi = doi;\n    }\n    if (hint) item.category_hint = hint;\n    const title = getTag(b, 'title');\n    if (title) item.title = title;\n    const pub = getTag(b, 'pubDate') || getTag(b, 'published') || getTag(b, 'updated') || getTag(b, 'dc:date');\n    if (pub) { const d = new Date(pub); if (!isNaN(d.getTime())) item.publishedAt = d.toISOString(); }\n\n    out.items.push(item);\n    count++;\n  }\n}\n\nreturn [{ json: out }];\n"
+      },
+      "id": "e6a8c0d2-2b4f-4e6a-8c1d-73b95f16a028",
+      "name": "Fetch & Parse Feeds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "f1b3d5e7-3a5c-4f7b-9d2e-84ca60b71f39",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({ ok: false, error: 'no feeds', items: [], failed: [] }) }}",
+        "options": {}
+      },
+      "id": "a4c6e8f0-4b6d-4a8c-b3f1-95db71c82a40",
+      "name": "Respond Empty",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Has Feeds?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Feeds?": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch & Parse Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch & Parse Feeds": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateId": "feed-conocimiento-fetch-feeds"
+  },
+  "tags": []
+}
